@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <set>
@@ -395,10 +396,14 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         ++new_count;
       }
 
-      // Decrement debounce counter with saturation
+      // Decrement, then clamp into [confirmation_threshold, healing_threshold]
+      // so a long run can't drive the counter away unbounded (AUTOSAR
+      // SWS_Dem_00418/00419). Unbounded would mask a recurring fault.
       if (debounce_counter > std::numeric_limits<int32_t>::min()) {
         --debounce_counter;
       }
+      debounce_counter = std::min(
+          std::max(debounce_counter, config.confirmation_threshold), config.healing_threshold);
 
       // Check for immediate confirmation of CRITICAL
       std::string new_status = current_status;
@@ -448,10 +453,13 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, uint
         throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
       }
     } else {
-      // PASSED event - increment debounce counter with saturation
+      // PASSED event - increment, then clamp into the debounce band (see the
+      // FAILED branch). The positive clamp is the masking-bug fix.
       if (debounce_counter < std::numeric_limits<int32_t>::max()) {
         ++debounce_counter;
       }
+      debounce_counter = std::min(
+          std::max(debounce_counter, config.confirmation_threshold), config.healing_threshold);
 
       std::string new_status = current_status;
       if (config.healing_enabled && debounce_counter >= config.healing_threshold) {

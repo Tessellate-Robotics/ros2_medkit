@@ -143,10 +143,14 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
       ++state.occurrence_count;
     }
 
-    // Decrement debounce counter (towards confirmation) with saturation
+    // Decrement, then clamp into [confirmation_threshold, healing_threshold]
+    // so a long run can't drive the counter away unbounded (AUTOSAR
+    // SWS_Dem_00418/00419). Unbounded would mask a recurring fault.
     if (state.debounce_counter > std::numeric_limits<int32_t>::min()) {
       --state.debounce_counter;
     }
+    state.debounce_counter = std::min(
+      std::max(state.debounce_counter, config.confirmation_threshold), config.healing_threshold);
 
     // Add source if not already present
     state.reporting_sources.insert(source_id);
@@ -170,10 +174,13 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, ui
     // PASSED event
     state.last_passed_time = timestamp;
 
-    // Increment debounce counter (towards healing) with saturation
+    // Increment, then clamp into the debounce band (see the FAILED branch).
+    // The positive clamp is the masking-bug fix.
     if (state.debounce_counter < std::numeric_limits<int32_t>::max()) {
       ++state.debounce_counter;
     }
+    state.debounce_counter = std::min(
+      std::max(state.debounce_counter, config.confirmation_threshold), config.healing_threshold);
   }
 
   // Update status based on debounce counter

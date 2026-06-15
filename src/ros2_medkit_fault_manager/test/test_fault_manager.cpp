@@ -616,6 +616,34 @@ TEST_F(FaultStorageTest, HealedFaultCanRecurWithFailedEvents) {
   EXPECT_EQ(fault->status, Fault::STATUS_CONFIRMED);
 }
 
+TEST_F(FaultStorageTest, RecurringFaultReconfirmsAfterManyPassedEvents) {
+  rclcpp::Clock clock;
+  // Regression: a long healthy run must not drive the debounce counter unbounded
+  // positive and mask a recurring fault. The counter is clamped to
+  // [confirmation_threshold, healing_threshold], so re-confirmation costs a bounded
+  // number of FAILED events regardless of how many PASSED preceded.
+  DebounceConfig config = default_config();  // confirmation=-1, healing disabled, healing_threshold=3
+
+  storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                              clock.now(), config);
+  ASSERT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+
+  // Flood with PASSED. Healing is disabled, so this parks the fault at PREPASSED
+  // (out of the default CONFIRMED view) rather than HEALED.
+  for (int i = 0; i < 100; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_PASSED, 0, "", "/node1", clock.now(), config);
+  }
+  EXPECT_NE(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+
+  // Clamp holds the counter at healing_threshold (3), so 4 FAILED reach
+  // confirmation_threshold (-1). Without the clamp this would take ~101.
+  for (int i = 0; i < 4; ++i) {
+    storage_.report_fault_event("FAULT_1", ReportFault::Request::EVENT_FAILED, Fault::SEVERITY_ERROR, "Test", "/node1",
+                                clock.now(), config);
+  }
+  EXPECT_EQ(storage_.get_fault("FAULT_1")->status, Fault::STATUS_CONFIRMED);
+}
+
 TEST_F(FaultStorageTest, GetAllFaultsReturnsAllFaults) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
